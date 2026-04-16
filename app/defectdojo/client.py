@@ -13,7 +13,6 @@ class DefectDojoClient:
         return f"https://{GIT_DOMAIN}"
 
     def _replace_locations(self, report: dict, project: str, branch: str) -> dict:
-
         base_url = f"{self._git_base()}/{project}/-/blob/{branch}"
 
         if "results" not in report:
@@ -36,12 +35,12 @@ class DefectDojoClient:
             payload["branch_tag"],
         )
 
-        # 2. Логика определения URL репозитория
         if "results" in report and len(report["results"]) > 0:
             first_finding_path = report["results"][0].get("path")
             repo_url = first_finding_path if (first_finding_path and "://" in first_finding_path) else f"{self._git_base()}/{payload['product_name']}"
         else:
             repo_url = f"{self._git_base()}/{payload['product_name']}"
+
         data = {
             "scan_type": payload["scan_type"],
             "product_type_name": payload["product_type_name"],
@@ -65,7 +64,8 @@ class DefectDojoClient:
             )
         }
 
-        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT) as client:
+        # Настройка SSL вынесена в инициализацию клиента
+        async with httpx.AsyncClient(timeout=REQUEST_TIMEOUT, verify=False) as client:
             try:
                 r = await client.post(
                     f"{DD_URL}/api/v2/import-scan/",

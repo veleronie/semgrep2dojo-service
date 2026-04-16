@@ -1,4 +1,4 @@
-from fastapi import FastAPI, HTTPException, Request, UploadFile, File, Form
+from fastapi import FastAPI, HTTPException, UploadFile, File, Form
 import logging
 import re
 import json
@@ -23,21 +23,31 @@ async def import_scan(
     pipeline_id: str = Form(...),
     report_file: UploadFile = File(...)
 ):
+    # 1. Валидация входных данных
     if not re.match(r"^[a-zA-Z0-9_\-\/]+$", project):
         raise HTTPException(status_code=400, detail="Invalid project format")
 
+    # 2. Проверка на дубликаты
     storage_key = f"{scanner}:{project}:{branch}:{commit}"
-    
     if is_processed(storage_key):
         logger.info(f"Scan {storage_key} already exists. Skipping.")
-        return {"status": "skipped", "reason": "Already processed"}
+        return {"status": "skipped", "reason": "Already processed", "key": storage_key}
 
     try:
-        content = await report_file.read()
-        report_json = json.loads(content)
-    except Exception:
+        # 3. Чтение и парсинг (с последующим закрытием дескриптора файла)
+        try:
+            content = await report_file.read()
+            report_json = json.loads(content)
+        finally:
+            await report_file.close() # Важно для очистки временных файлов FastAPI
+            
+    except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Invalid JSON in report file")
+    except Exception as e:
+        logger.error(f"File reading error: {e}")
+        raise HTTPException(status_code=500, detail="Error processing uploaded file")
 
+    # 4. Формирование данных для адаптера
     data = {
         "scanner": scanner,
         "project": project,
@@ -46,12 +56,16 @@ async def import_scan(
         "report": report_json
     }
 
+    # 5. Трансформация (здесь происходит замена путей на ссылки из app.py)
     payload = adapter.normalize(data)
 
+    # 6. Отправка в DefectDojo
     try:
         result = await dd_client.import_scan(payload)
         mark_processed(storage_key)
-        return {"status": "ok", "action": "imported", "key": storage_key}
+        logger.info(f"Successfully imported scan for {project} (commit: {commit})")
+        return {"status": "ok", "action": "imported", "key": storage_key, "dojo_response": result}
     except Exception as e:
-        logger.error(f"DefectDojo error: {str(e)}")
-        raise HTTPException(status_code=502, detail=str(e))
+        logger.error(f"DefectDojo integration failed: {str(e)}")
+        # Возвращаем 502 (Bad Gateway), так как проблема во внешнем сервисе (Dojo)
+        raise HTTPException(status_code=502, detail=f"DefectDojo error: {str(e)}")
